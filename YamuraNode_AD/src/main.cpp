@@ -4,7 +4,7 @@
 // Brian B. Smith
 // brianbsmith.com
 // February 2022 updated for Visual Code and PlatformIO July 2026
-//
+// Part of the YamuraLog project
 //#define VERBOSE // uncomment for debug output to serial
 //#define EXTRA_VERBOSE // uncomment for more debug output to serial
 #include <FlexCAN_T4.h>
