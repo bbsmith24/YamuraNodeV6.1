@@ -48,7 +48,11 @@ int led = 13;
 char buffer512[512];
 
 bool timeValid = true;
-bool displayMessages[10] = {false, false, false, false, false, false, false, false, false, false};
+// 0 control,1 A/D,2 IMU,3 GPS,4 tire,5 wheel,6 shock,7 RPM,8 CAN,9 hub,10 IMU ext,11 GPS ext
+#define DISPLAY_COUNT 12
+#define DISPLAY_IMU_EX 10
+#define DISPLAY_GPS_EX 11
+bool displayMessages[DISPLAY_COUNT] = {false};
 // forward declarations
 void DisplayMenu();
 void CAN_ControlMsg(const CANFD_message_t &msg);
@@ -163,7 +167,7 @@ void loop()
   char menuChoice;
   if (Serial.available()) 
   {
-    for(int idx = 0; idx < 10; idx++)
+    for(int idx = 0; idx < DISPLAY_COUNT; idx++)
     {
       displayMessages[idx] = false;
     }
@@ -179,7 +183,7 @@ void loop()
       case 'a':
       case 'A':
         Serial.println("All messages ON");
-        for(int idx = 0; idx < 10; idx++)
+        for(int idx = 0; idx < DISPLAY_COUNT; idx++)
         {
           displayMessages[idx] = true;
         }
@@ -200,14 +204,20 @@ void loop()
         displayMessages[1] = true;
         break;
       case 'i': 
-      case 'I':
-        Serial.println("IMU messages (id 0x40) ON");
+        Serial.println("IMU accel-only messages (id 0x40, 16 bytes) ON");
         displayMessages[2] = true;
         break;
+      case 'I':
+        Serial.println("IMU accel+gyro messages (id 0x40 28 bytes, or id 0x41) ON");
+        displayMessages[DISPLAY_IMU_EX] = true;
+        break;
       case 'g': 
-      case 'G':
-        Serial.println("GPS messages (id 0x50) ON");
+        Serial.println("GPS basic messages (id 0x50, 28 bytes) ON");
         displayMessages[3] = true;
+        break;
+      case 'G':
+        Serial.println("GPS extended messages (id 0x50 38 bytes, or id 0x51) ON");
+        displayMessages[DISPLAY_GPS_EX] = true;
         break;
       case 't': 
       case 'T':
@@ -255,7 +265,7 @@ void loop()
 ///
 void DisplayMenu()
 {
-  for(int idx = 0; idx < 10; idx++)
+  for(int idx = 0; idx < DISPLAY_COUNT; idx++)
   {
     displayMessages[idx] = false;
   }
@@ -273,8 +283,10 @@ void DisplayMenu()
   Serial.println("\tH - Show Hub messages            (id 0x10)");
   Serial.println("\tC - Show Control messages        (id 0x20)");
   Serial.println("\tD - Show A/D messages            (ids 0x30-0x3F)");
-  Serial.println("\tI - Show IMU messages            (id 0x40)");
-  Serial.println("\tG - Show GPS messages            (id 0x50)");
+  Serial.println("\ti - Show IMU accel-only messages (id 0x40, 16 bytes)");
+  Serial.println("\tI - Show IMU accel+gyro messages (id 0x40 28 bytes, or 0x41)");
+  Serial.println("\tg - Show GPS basic messages      (id 0x50, 28 bytes)");
+  Serial.println("\tG - Show GPS extended messages   (id 0x50 38 bytes, or 0x51)");
   Serial.println("\tT - Show IR Tire messages        (ids 0x60-0x6F)");
   Serial.println("\tW - Show Wheel Speed messages    (ids 0x80-0x8F)");
   Serial.println("\tS - Show Shock Position messages (ids 0x70-0x7F)");
@@ -359,7 +371,9 @@ void CAN_A2DMessage(const CANFD_message_t &msg)
 //
 void CAN_AccelMessage(const CANFD_message_t &msg) 
 {
-  if(!displayMessages[2])
+  // accel + gyro: 28 bytes on 0x40 (CAN FD sends it as 32), or id 0x41
+  bool extended = (msg.id == 0x41) || (msg.len >= 28);
+  if(!displayMessages[extended ? DISPLAY_IMU_EX : 2])
   {
     return;
   }
@@ -374,8 +388,8 @@ void CAN_AccelMessage(const CANFD_message_t &msg)
                                                                  imuData.dataStructure.accel[1],
                                                                  imuData.dataStructure.accel[2]);
   Serial.print(buffer512);
-  // accel + gyro message: same id, 28 bytes (CAN FD sends it as 32) - gyro X/Y/Z follow the accel, deg/s
-  if (msg.len >= 28)
+  // gyro X/Y/Z follow the accel, deg/s
+  if (extended)
   {
     float gyro[3];
     memcpy(gyro, &msg.buf[IMU_SIZE], sizeof(gyro));
@@ -389,7 +403,9 @@ void CAN_AccelMessage(const CANFD_message_t &msg)
 //
 void CAN_GPSMessage(const CANFD_message_t &msg) 
 {
-  if(!displayMessages[3])
+  // extended: 38 bytes on 0x50 (CAN FD sends it as 48), or id 0x51
+  bool extended = (msg.id == 0x51) || (msg.len >= 38);
+  if(!displayMessages[extended ? DISPLAY_GPS_EX : 3])
   {
     return;
   }
@@ -412,9 +428,8 @@ void CAN_GPSMessage(const CANFD_message_t &msg)
                                                                                                                  gpsData.dataStructure.speed,   // mm/s
                                                                                                                  gpsData.dataStructure.SIV);
   Serial.print(buffer512);
-  // extended message: 38 bytes (CAN FD sends it as 48) - time of week (ms), horizontal
-  // accuracy (mm), fix type and RTK state follow the basic fields
-  if (msg.len >= 38)
+  // time of week (ms), horizontal accuracy (mm), fix type and RTK state follow the basic fields
+  if (extended)
   {
     uint32_t iTOW, hAcc;
     memcpy(&iTOW, &msg.buf[GPS_SIZE], 4);
