@@ -411,7 +411,19 @@ void CAN_GPSMessage(const CANFD_message_t &msg)
                                                                                                                  gpsData.dataStructure.course,
                                                                                                                  gpsData.dataStructure.speed,   // mm/s
                                                                                                                  gpsData.dataStructure.SIV);
-  Serial.println(buffer512);
+  Serial.print(buffer512);
+  // extended message: 38 bytes (CAN FD sends it as 48) - time of week (ms), horizontal
+  // accuracy (mm), fix type and RTK state follow the basic fields
+  if (msg.len >= 38)
+  {
+    uint32_t iTOW, hAcc;
+    memcpy(&iTOW, &msg.buf[GPS_SIZE], 4);
+    memcpy(&hAcc, &msg.buf[GPS_SIZE + 4], 4);
+    sprintf(buffer512, "\tTOW\t%lu\tHACC\t%lu\tFIX\t%d\tRTK\t%d", (unsigned long)iTOW, (unsigned long)hAcc,
+            msg.buf[GPS_SIZE + 8], msg.buf[GPS_SIZE + 9]);
+    Serial.print(buffer512);
+  }
+  Serial.println();
 }
 //
 // IR tire temp node message

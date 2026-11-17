@@ -15,6 +15,24 @@
 #define GPS_AQ_LED 22
 #define GNSS_CS 10
 #define CANID  0x050
+// extended GPS message - same CAN id (0x50) as the 28-byte message; the hub tells them
+// apart by length (28 = basic, 38 = extended) and logs the extended one as record 0x51
+#define GPS_EX_SIZE 38
+struct __attribute__((packed)) GPS_Ex_Structure
+{
+  GPS_Structure base;        // 28 bytes - same layout as the basic message
+  uint32_t iTOW;             //  4 bytes - GPS time of week of the fix, ms
+  uint32_t hAcc;             //  4 bytes - horizontal accuracy estimate, mm
+  uint8_t fixType;           //  1 byte  - 0 none, 2 2D, 3 3D, 4 GNSS + dead reckoning, 5 time only
+  uint8_t carrSoln;          //  1 byte  - RTK: 0 none, 1 float, 2 fixed
+                             // --------
+                             // 38 total bytes
+};
+union GPS_Ex_Data
+{
+  GPS_Ex_Structure dataStructure;
+  uint8_t dataBuffer[GPS_EX_SIZE];
+} gpsExData;
 // using 11 bit Identifiers
 // 7 bit node type   (0x00 to 0x3F)
 // 4 bit node number (0x00 to 0x0F)
@@ -137,12 +155,13 @@ void setup(void)
 void SendSensorValues()
 {
   CANFD_message_t msg;
-  msg.len = GPS_SIZE;
+  msg.len = GPS_EX_SIZE;
   msg.id = CANID;
   msg.seq = 1;
+  memcpy(&gpsExData.dataStructure.base, gpsData.dataBuffer, GPS_SIZE);
 
   #ifdef VERBOSE
-  sprintf(buffer512, "Send\t%ld\tid\t0x%02X\tGPS\t%02d/%02d/%04d %02d:%02d:%02d\tLAT\t%ld\tLONG\t%ld\tCOURSE\t%ld\tSIV\t%d", gpsData.dataStructure.timestamp,
+  sprintf(buffer512, "Send\t%ld\tid\t0x%02X\tGPS\t%02d/%02d/%04d %02d:%02d:%02d\tLAT\t%ld\tLONG\t%ld\tCOURSE\t%ld\tSIV\t%d\tTOW\t%lu\tHACC\t%lu\tFIX\t%d\tRTK\t%d", gpsData.dataStructure.timestamp,
                                                                                                                 (int)msg.id,
                                                                                                                 gpsData.dataStructure.gpsDay,
                                                                                                                 gpsData.dataStructure.gpsMonth,
@@ -153,13 +172,17 @@ void SendSensorValues()
                                                                                                                 gpsData.dataStructure.latitude,
                                                                                                                 gpsData.dataStructure.longitude,
                                                                                                                 gpsData.dataStructure.course,
-                                                                                                                gpsData.dataStructure.SIV);
+                                                                                                                gpsData.dataStructure.SIV,
+                                                                                                                (unsigned long)gpsExData.dataStructure.iTOW,
+                                                                                                                (unsigned long)gpsExData.dataStructure.hAcc,
+                                                                                                                gpsExData.dataStructure.fixType,
+                                                                                                                gpsExData.dataStructure.carrSoln);
   Serial.println(buffer512);
   #endif
   // load the message payload (copy from dataBuffer)
-  for(int idx = 0; idx < GPS_SIZE; idx++)
+  for(int idx = 0; idx < GPS_EX_SIZE; idx++)
   {
-  	msg.buf[idx] = gpsData.dataBuffer[idx];
+  	msg.buf[idx] = gpsExData.dataBuffer[idx];
   }
   // write to can3
   canFD.write(msg);
@@ -190,6 +213,11 @@ void loop()
     gpsData.dataStructure.course =    gnssDevice.getHeading();
     gpsData.dataStructure.speed =     gnssDevice.getGroundSpeed();
     gpsData.dataStructure.SIV =       gnssDevice.getSIV();
+    // fix time and quality (all from the same NAV-PVT solution)
+    gpsExData.dataStructure.iTOW =     gnssDevice.getTimeOfWeek();
+    gpsExData.dataStructure.hAcc =     (uint32_t)gnssDevice.getHorizontalAccEst();
+    gpsExData.dataStructure.fixType =  gnssDevice.getFixType();
+    gpsExData.dataStructure.carrSoln = gnssDevice.getCarrierSolutionType();
     if(gnssDevice.getSIV() > 0)
     {
       digitalWrite(GPS_AQ_LED,HIGH);
