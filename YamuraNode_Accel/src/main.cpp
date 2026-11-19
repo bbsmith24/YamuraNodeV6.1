@@ -43,13 +43,32 @@ union IMU_Gyro_Data
   uint8_t dataBuffer[IMU_GYRO_SIZE];
 } imuGyroData;
 #define RAD_TO_DEG_F 57.29577951F
+//
+// gyro zero-rate bias - measured at every startup while the box is still, subtracted
+// from every reading. If the box isn't still during the measurement (car rolling,
+// being pushed), the last good bias saved in EEPROM is used instead.
+//
+#include <EEPROM.h>
+#define GYRO_CAL_SAMPLES     200      // 2 seconds at 10 ms
+#define GYRO_CAL_INTERVAL_MS 10
+#define GYRO_CAL_MAX_STDDEV  3.0F     // deg/s - loose enough for engine idle vibration
+#define GYRO_CAL_MAX_DEV     15.0F    // deg/s - any single reading this far from the mean = moving
+#define GYRO_BIAS_MAX        50.0F    // deg/s - reject stored values beyond this as corrupt
+#define GYRO_BIAS_EEPROM_ADDR 0
+#define GYRO_BIAS_MAGIC      0x59474231UL   // "YGB1"
+struct GyroBiasRecord
+{
+  uint32_t magic;
+  float bias[3];
+};
+float gyroBias[3] = {0.0F, 0.0F, 0.0F};
 // using 11 bit Identifiers
 // 7 bit node type   (0x00 to 0x3F)
 // 4 bit node number (0x00 to 0x0F)
 // hub gets lowest possible number so it has bus priority
 // YamuraLog device IDs (all use standard 11 bit IDs)
 // HUB       0000001 0000      (one allowed) 0x10
-// Control   0000010 0000      (one allowed) 0x20
+// (0x20 was the Control box - obsolete, removed)
 // A2D       0000011 0000-1111               0x30-0x3F
 // Accel     0000100 0000      (one allowed) 0x40
 // GPS       0000101 0000      (one allowed) 0x50
@@ -71,6 +90,8 @@ char buffer512[512];
 uint32_t deltaTime = 0;
 // forward declarations
 void SendSensorValues();
+void ReadGyroRaw(float gyro[3]);
+void CalibrateGyroBias();
 
 //
 //
@@ -132,10 +153,12 @@ void setup(void)
     #ifdef LSM9DS1
     Serial.print("LSM9DS1 (imu) initialized on I2C");
     #endif
-    #ifdef LSM9DS1
-    Serial.print("MPU6050 (imu) initialized on I2C");
+    #ifdef MPU6050
+    Serial.println("MPU6050 (imu) initialized on I2C");
     #endif
   #endif
+  // measure gyro bias before sending anything - box should be still
+  CalibrateGyroBias();
   //
   // CAN-FD setup
   //
@@ -150,8 +173,8 @@ void setup(void)
   canFD.setRegions(64);
   canFD.setBaudRateAdvanced(config, 1, 1);
   canFD.setMBFilter(REJECT_ALL);
-  // mailbox 0 - messages from control and hub box, ignore all others
-  canFD.setMBFilterRange(MB0, 010, 0x20);
+  // mailbox 0 - messages from the hub, ignore all others
+  canFD.setMBFilterRange(MB0, 0x10, 0x10);
   canFD.enhanceFilter(MB0);
   // sensor value send timer
   timer.begin(SendSensorValues, (sampleDelay * 1000));
@@ -184,7 +207,11 @@ void SendSensorValues()
   imuGyroData.dataStructure.gyro[1] = g.gyro.y * RAD_TO_DEG_F;
   imuGyroData.dataStructure.gyro[2] = g.gyro.z * RAD_TO_DEG_F;
   #endif
-
+  // remove zero-rate bias
+  for(int axis = 0; axis < 3; axis++)
+  {
+    imuGyroData.dataStructure.gyro[axis] -= gyroBias[axis];
+  }
 
   CANFD_message_t msg;
   msg.len = IMU_GYRO_SIZE;
@@ -209,6 +236,111 @@ void SendSensorValues()
   }
   // write to can3
   canFD.write(msg);
+}
+//
+// read the gyro (deg/s, bias not removed)
+//
+void ReadGyroRaw(float gyro[3])
+{
+  #ifdef LSM9DS1
+  imu.readGyro();
+  gyro[0] = imu.calcGyro(imu.gx);
+  gyro[1] = imu.calcGyro(imu.gy);
+  gyro[2] = imu.calcGyro(imu.gz);
+  #endif
+  #ifdef MPU6050
+  sensors_event_t a, g, temp;
+  imu.getEvent(&a, &g, &temp);
+  gyro[0] = g.gyro.x * RAD_TO_DEG_F;
+  gyro[1] = g.gyro.y * RAD_TO_DEG_F;
+  gyro[2] = g.gyro.z * RAD_TO_DEG_F;
+  #endif
+}
+//
+// measure gyro zero-rate bias at startup
+// still box  -> use the measured bias and save it to EEPROM
+// moving box -> use the last saved bias (or zero if none saved yet)
+//
+void CalibrateGyroBias()
+{
+  static float samples[GYRO_CAL_SAMPLES][3];
+  float mean[3] = {0.0F, 0.0F, 0.0F};
+  for(int idx = 0; idx < GYRO_CAL_SAMPLES; idx++)
+  {
+    ReadGyroRaw(samples[idx]);
+    for(int axis = 0; axis < 3; axis++)
+    {
+      mean[axis] += samples[idx][axis];
+    }
+    delay(GYRO_CAL_INTERVAL_MS);
+  }
+  for(int axis = 0; axis < 3; axis++)
+  {
+    mean[axis] /= GYRO_CAL_SAMPLES;
+  }
+  // stillness check - spread around the mean on every axis
+  float stdDev[3] = {0.0F, 0.0F, 0.0F};
+  float maxDev = 0.0F;
+  for(int idx = 0; idx < GYRO_CAL_SAMPLES; idx++)
+  {
+    for(int axis = 0; axis < 3; axis++)
+    {
+      float dev = samples[idx][axis] - mean[axis];
+      stdDev[axis] += dev * dev;
+      if(fabsf(dev) > maxDev)
+      {
+        maxDev = fabsf(dev);
+      }
+    }
+  }
+  bool still = (maxDev <= GYRO_CAL_MAX_DEV);
+  for(int axis = 0; axis < 3; axis++)
+  {
+    stdDev[axis] = sqrtf(stdDev[axis] / GYRO_CAL_SAMPLES);
+    if((stdDev[axis] > GYRO_CAL_MAX_STDDEV) || (fabsf(mean[axis]) > GYRO_BIAS_MAX))
+    {
+      still = false;
+    }
+  }
+  const char *source;
+  if(still)
+  {
+    GyroBiasRecord rec;
+    rec.magic = GYRO_BIAS_MAGIC;
+    for(int axis = 0; axis < 3; axis++)
+    {
+      gyroBias[axis] = mean[axis];
+      rec.bias[axis] = mean[axis];
+    }
+    EEPROM.put(GYRO_BIAS_EEPROM_ADDR, rec);
+    source = "measured (saved)";
+  }
+  else
+  {
+    GyroBiasRecord rec;
+    EEPROM.get(GYRO_BIAS_EEPROM_ADDR, rec);
+    bool valid = (rec.magic == GYRO_BIAS_MAGIC);
+    for(int axis = 0; axis < 3; axis++)
+    {
+      if(!isfinite(rec.bias[axis]) || (fabsf(rec.bias[axis]) > GYRO_BIAS_MAX))
+      {
+        valid = false;
+      }
+    }
+    for(int axis = 0; axis < 3; axis++)
+    {
+      gyroBias[axis] = valid ? rec.bias[axis] : 0.0F;
+    }
+    source = valid ? "stored (box moving)" : "none (box moving, nothing stored)";
+  }
+  #ifdef VERBOSE
+  sprintf(buffer512, "Gyro bias %s\t%0.3f\t%0.3f\t%0.3f deg/s\tspread %0.3f %0.3f %0.3f max %0.3f",
+          source, gyroBias[0], gyroBias[1], gyroBias[2],
+          stdDev[0], stdDev[1], stdDev[2], maxDev);
+  Serial.println(buffer512);
+  #else
+  (void)source;
+  #endif
 }
 //
 // loop - check for received messages
@@ -250,18 +382,6 @@ void loop()
         sprintf(buffer512, "%ld\tUnknown submessage %02X from hub", millis(), (int)msg.buf[0]);
       }
       Serial.println(buffer512);
-      #endif
-    }
-    // control box messages
-    else if (msg.id == 0x20)
-    {
-      #ifdef VERBOSE
-      Serial.print(millis());
-      Serial.print("\tControl");
-      Serial.print("\tID\t");
-      Serial.print(msg.id, HEX);
-      Serial.print("\tMB\t");
-      Serial.println(msg.mb);
       #endif
     }
     else

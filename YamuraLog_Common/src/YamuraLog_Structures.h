@@ -38,7 +38,7 @@
 // hub gets lowest possible number so it has bus priority
 // YamuraLog device IDs (all use standard 11 bit IDs)
 // HUB       0000001 0000      (only one allowed) 0x10  
-// Control   0000010 0000      (only one allowed) 0x20
+// (0x20 was the Control box - obsolete, removed)
 // A2D       0000011 0000-1111                    0x30-0x3F (this node)
 // IMU       0000100 0000      (only one allowed) 0x40
 // GPS       0000101 0000      (only one allowed) 0x50
@@ -78,9 +78,6 @@ union TimeStamp
 // 0x10 HUB structures
 // no structure, sends current millis value as heartbeat at regular intervals
 
-//
-// 0x20 CONTROL structures
-// no structure, sends 1 to start, 0 to stop logging
 
 //
 // 0x30 A2D structures

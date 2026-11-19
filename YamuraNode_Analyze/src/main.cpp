@@ -26,7 +26,7 @@ FlexCAN_T4FD<CAN3, RX_SIZE_256, TX_SIZE_16> canFD;  // can3 port
 // hub gets lowest possible number so it has bus priority
   // YamuraLog device IDs (all use standard 11 bit IDs)
   // HUB       0000001 0000      (only one allowed) 0x10  (this node)
-  // Control   0000010 0000      (only one allowed) 0x20
+  // (0x20 was the Control box - obsolete, removed)
   // A2D       0000011 0000-1111                    0x30-0x3F
   // Accel     0000100 0000      (only one allowed) 0x40
   // GPS       0000101 0000      (only one allowed) 0x50
@@ -48,14 +48,15 @@ int led = 13;
 char buffer512[512];
 
 bool timeValid = true;
-// 0 control,1 A/D,2 IMU,3 GPS,4 tire,5 wheel,6 shock,7 RPM,8 CAN,9 hub,10 IMU ext,11 GPS ext
+// 0 unused,1 A/D,2 IMU,3 GPS,4 tire,5 wheel,6 shock,7 RPM,8 CAN,9 hub,10 IMU ext,11 GPS ext
 #define DISPLAY_COUNT 12
 #define DISPLAY_IMU_EX 10
 #define DISPLAY_GPS_EX 11
 bool displayMessages[DISPLAY_COUNT] = {false};
+// unformatted mode - print id, length and raw bytes of every message received, any id
+bool displayRaw = false;
 // forward declarations
 void DisplayMenu();
-void CAN_ControlMsg(const CANFD_message_t &msg);
 void CAN_A2DMessage(const CANFD_message_t &msg);
 void CAN_AccelMessage(const CANFD_message_t &msg);
 void CAN_GPSMessage(const CANFD_message_t &msg);
@@ -65,6 +66,8 @@ void CAN_ShockMessage(const CANFD_message_t &msg);
 void CAN_RPMMessage(const CANFD_message_t &msg);
 void CAN_CANMessage(const CANFD_message_t &msg);
 void CAN_HubMessage(const CANFD_message_t &msg);
+void CAN_OtherMessage(const CANFD_message_t &msg);
+bool PrintRaw(const CANFD_message_t &msg);
 void sendHeartbeat();
 
 //
@@ -102,12 +105,13 @@ void setup(void)
   canFD.setMB(MB7,RX,STD);
   canFD.setMB(MB8,RX,STD);
   canFD.setMB(MB9,RX,STD);
+  canFD.setMB(MB10,RX,STD);
   canFD.enableMBInterrupts();
   
-  // mailbox 0 - messages from control box
-  canFD.setMBFilterRange(MB0,0x20,0x20); 
+  // mailbox 0 - ids 0x20-0x2F (no YamuraLog node uses them; only shown in unformatted mode)
+  canFD.setMBFilterRange(MB0,0x20,0x2F); 
   canFD.enhanceFilter(MB0);
-  canFD.onReceive(MB0,CAN_ControlMsg);
+  canFD.onReceive(MB0,CAN_OtherMessage);
   
   // mailbox 1 - messages from A2D nodes
   canFD.setMBFilterRange(MB1,0x30,0x3F); 
@@ -154,6 +158,11 @@ void setup(void)
   canFD.enhanceFilter(MB9);
   canFD.onReceive(MB9,CAN_HubMessage);
 
+  // mailbox 10 - every id above the YamuraLog range (only shown in unformatted mode)
+  canFD.setMBFilterRange(MB10,0xB0,0x7FF); 
+  canFD.enhanceFilter(MB10);
+  canFD.onReceive(MB10,CAN_OtherMessage);
+
   canFD.mailboxStatus();
   DisplayMenu();
 }
@@ -171,6 +180,7 @@ void loop()
     {
       displayMessages[idx] = false;
     }
+    displayRaw = false;
    
     menuChoice = Serial.read();
     switch (menuChoice) 
@@ -192,11 +202,6 @@ void loop()
       case 'H':
         Serial.println("HUB messages (id 0x10) ON");
         displayMessages[9] = true;
-        break;
-      case 'c': 
-      case 'C':
-        Serial.println("CONTROL messages (id 0x20) ON");
-        displayMessages[0] = true;
         break;
       case 'd': 
       case 'D':
@@ -244,6 +249,12 @@ void loop()
         Serial.println("CAN messages (id 0xA0) ON");
         displayMessages[8] = true;
         break;
+      case 'u':
+      case 'U':
+        Serial.println("Unformatted messages (all ids 0x000-0x7FF) ON");
+        Serial.println("millis\tid\tlen\tbytes (hex)");
+        displayRaw = true;
+        break;
       case 'b': 
       case 'B':
         Serial.println("Send Heartbeat message");
@@ -269,6 +280,7 @@ void DisplayMenu()
   {
     displayMessages[idx] = false;
   }
+  displayRaw = false;
   Serial.println();
   
   Serial.println("CAN Configuration:");
@@ -281,7 +293,6 @@ void DisplayMenu()
   Serial.println();
   Serial.println("Menu Options:");
   Serial.println("\tH - Show Hub messages            (id 0x10)");
-  Serial.println("\tC - Show Control messages        (id 0x20)");
   Serial.println("\tD - Show A/D messages            (ids 0x30-0x3F)");
   Serial.println("\ti - Show IMU accel-only messages (id 0x40, 16 bytes)");
   Serial.println("\tI - Show IMU accel+gyro messages (id 0x40 28 bytes, or 0x41)");
@@ -293,6 +304,7 @@ void DisplayMenu()
   Serial.println("\tR - Show RPM messages            (id 0x90)");
   Serial.println("\tX - Show CAN messages            (id 0xA0)");
   Serial.println("\tA - Show All messages            (ids 0x10-0xA0)");
+  Serial.println("\tU - Show all messages unformatted (id, length, raw bytes)");
   Serial.println("\tB - Send Heartbeat");
   Serial.println();
   Serial.println("\tM - Menu");
@@ -301,43 +313,14 @@ void DisplayMenu()
 //
 // CAN mailbox message handlers
 //
-// control box message
-//
-void CAN_ControlMsg(const CANFD_message_t &msg) 
-{
-  if(!displayMessages[0])
-  {
-    return;
-  }
-  sprintf(buffer512, "%d\t0x%02X\tControl\tlen %d\t", millis(),
-                                                      msg.id,
-                                                      msg.len);
-  if(msg.buf[0] == 1)
-  { 
-    if(msg.buf[1] == 1)
-    {
-      sprintf(buffer512, "%s\t%s", buffer512, "LOG START");
-    }
-    else if (msg.buf[1] == 0)
-    {
-      sprintf(buffer512, "%s\t%s", buffer512, "LOG STOP");
-    }
-    else 
-    {
-      sprintf(buffer512, "%s\t%s", buffer512, "UNKNOWN");
-    }
-  }
-  else 
-  {
-    sprintf(buffer512, "%s\t%s", buffer512, "UNKNOWN");
-  }
-  Serial.println(buffer512);
-}
-//
 // A2D node message
 //
 void CAN_A2DMessage(const CANFD_message_t &msg) 
 {
+  if(PrintRaw(msg))
+  {
+    return;
+  }
   if(!displayMessages[1])
   {
     return;
@@ -371,6 +354,10 @@ void CAN_A2DMessage(const CANFD_message_t &msg)
 //
 void CAN_AccelMessage(const CANFD_message_t &msg) 
 {
+  if(PrintRaw(msg))
+  {
+    return;
+  }
   // accel + gyro: 28 bytes on 0x40 (CAN FD sends it as 32), or id 0x41
   bool extended = (msg.id == 0x41) || (msg.len >= 28);
   if(!displayMessages[extended ? DISPLAY_IMU_EX : 2])
@@ -403,6 +390,10 @@ void CAN_AccelMessage(const CANFD_message_t &msg)
 //
 void CAN_GPSMessage(const CANFD_message_t &msg) 
 {
+  if(PrintRaw(msg))
+  {
+    return;
+  }
   // extended: 38 bytes on 0x50 (CAN FD sends it as 48), or id 0x51
   bool extended = (msg.id == 0x51) || (msg.len >= 38);
   if(!displayMessages[extended ? DISPLAY_GPS_EX : 3])
@@ -445,6 +436,10 @@ void CAN_GPSMessage(const CANFD_message_t &msg)
 //
 void CAN_TireIRMessage(const CANFD_message_t &msg) 
 {
+  if(PrintRaw(msg))
+  {
+    return;
+  }
   if(!displayMessages[4])
   {
     return;
@@ -468,6 +463,10 @@ void CAN_TireIRMessage(const CANFD_message_t &msg)
 //
 void CAN_WheelSpeedMessage(const CANFD_message_t &msg) 
 {
+  if(PrintRaw(msg))
+  {
+    return;
+  }
   if(!displayMessages[5])
   {
     return;
@@ -487,6 +486,10 @@ void CAN_WheelSpeedMessage(const CANFD_message_t &msg)
 //
 void CAN_ShockMessage(const CANFD_message_t &msg) 
 {
+  if(PrintRaw(msg))
+  {
+    return;
+  }
   if(!displayMessages[6])
   {
     return;
@@ -513,6 +516,10 @@ void CAN_ShockMessage(const CANFD_message_t &msg)
 //
 void CAN_RPMMessage(const CANFD_message_t &msg) 
 {
+  if(PrintRaw(msg))
+  {
+    return;
+  }
   if(!displayMessages[7])
   {
     return;
@@ -539,6 +546,10 @@ void CAN_RPMMessage(const CANFD_message_t &msg)
 //
 void CAN_CANMessage(const CANFD_message_t &msg) 
 {
+  if(PrintRaw(msg))
+  {
+    return;
+  }
   if(!displayMessages[8])
   {
     return;
@@ -565,6 +576,10 @@ void CAN_CANMessage(const CANFD_message_t &msg)
 //
 void CAN_HubMessage(const CANFD_message_t &msg)  
 {
+  if(PrintRaw(msg))
+  {
+    return;
+  }
   if(!displayMessages[9])
   {
     return;
@@ -583,10 +598,34 @@ void CAN_HubMessage(const CANFD_message_t &msg)
   }
   else
   {
-    sprintf(buffer512, "%d\t0x%02X\tHub\t%Unknown message 0x%02X (local time)", millis(), 
+    sprintf(buffer512, "%lu\t0x%02X\tHub\tUnknown message 0x%02X (local time)", (unsigned long)millis(), (unsigned int)msg.id,
                                                                                 msg.buf[0]);
   }
   Serial.println(buffer512);      
+}
+//
+// any id outside the YamuraLog range - only shown unformatted
+//
+void CAN_OtherMessage(const CANFD_message_t &msg)
+{
+  PrintRaw(msg);
+}
+//
+// unformatted mode: print local time, id, length and raw bytes, return true if printed
+//
+bool PrintRaw(const CANFD_message_t &msg)
+{
+  if(!displayRaw)
+  {
+    return false;
+  }
+  int pos = sprintf(buffer512, "%lu\t0x%03lX\t%d\t", (unsigned long)millis(), (unsigned long)msg.id, msg.len);
+  for(uint8_t idx = 0; (idx < msg.len) && (idx < 64); idx++)
+  {
+    pos += sprintf(&buffer512[pos], "%02X ", msg.buf[idx]);
+  }
+  Serial.println(buffer512);
+  return true;
 }
 //
 // send a timestamp heartbeat

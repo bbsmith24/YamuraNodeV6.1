@@ -19,7 +19,7 @@
 // hub gets lowest possible number so it has bus priority
 // YamuraLog device IDs (all use standard 11 bit IDs)
 // HUB       0000001 0000      (one allowed) 0x10
-// Control   0000010 0000      (one allowed) 0x20
+// (0x20 was the Control box - obsolete, removed)
 // A2D       0000011 0000-1111               0x30-0x3F
 // Accel     0000100 0000      (one allowed) 0x40
 // GPS       0000101 0000      (one allowed) 0x50
@@ -77,8 +77,8 @@ void setup(void)
   canFD.setRegions(64);
   canFD.setBaudRateAdvanced(config, 1, 1);
   canFD.setMBFilter(REJECT_ALL);
-  // mailbox 0 - messages from control and hub box, ignore all others
-  canFD.setMBFilterRange(MB0, 010, 0x20);
+  // mailbox 0 - messages from the hub, ignore all others
+  canFD.setMBFilterRange(MB0, 0x10, 0x10);
   canFD.enhanceFilter(MB0);
   // sensor value send timer
   timer.begin(SendSensorValues, (sampleDelay * 1000));
@@ -165,18 +165,6 @@ void loop()
         sprintf(buffer512, "%ld\tUnknown submessage %02X from hub", millis(), (int)msg.buf[0]);
       }
       Serial.println(buffer512);
-      #endif
-    }
-    // control box messages
-    else if (msg.id == 0x20)
-    {
-      #ifdef VERBOSE
-      Serial.print(millis());
-      Serial.print("\tControl");
-      Serial.print("\tID\t");
-      Serial.print(msg.id, HEX);
-      Serial.print("\tMB\t");
-      Serial.println(msg.mb);
       #endif
     }
     else
