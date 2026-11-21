@@ -178,7 +178,23 @@ union SPEED_Data
 
 //
 // 0x90 RPM structures
-// not defined yet
+//
+#define RPM_SIZE 12                // valid CAN FD length
+struct __attribute__((packed)) RPM_Structure
+{
+  uint32_t timestamp;        // 4 bytes - hub time (ms) of the latest tach pulse
+  uint32_t periodUs;         // 4 bytes - averaged time between tach pulses (us), 0 = engine stopped
+  uint16_t rpm;              // 2 bytes - engine rpm
+  uint8_t  shiftState;       // 1 byte  - 0 off, 1 shift light on, 2 redline (flashing)
+  uint8_t  reserved;         // 1 byte
+                             // ------------
+                             //       12 total bytes
+};
+union RPM_Data
+{
+  RPM_Structure dataStructure;
+  uint8_t dataBuffer[RPM_SIZE];
+} rpmData;
 
 //
 // 0xA0 CAN structures
