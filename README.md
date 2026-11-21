@@ -10,6 +10,7 @@ All nodes are PlatformIO projects for the Teensy 4.0:
 | YamuraNode_AD | A2D + digital inputs | 0x30-0x3F |
 | YamuraNode_Accel | IMU (accel + gyro) | 0x40 |
 | YamuraNode_GPS | u-blox GPS | 0x50 |
+| YamuraNode_GPSRTK | u-blox ZED-F9P RTK GPS (no CAN yet) | 0x50 (planned) |
 | YamuraNode_IRTire | MLX90621 IR tire temperature | 0x60-0x6F |
 | YamuraNode_Speed | Wheel speed | 0x80-0x8F |
 | YamuraNode_Analyze | CAN bus analyzer (serial monitor of all node messages) | listens to all |
