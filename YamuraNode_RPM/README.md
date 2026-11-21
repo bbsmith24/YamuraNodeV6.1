@@ -19,6 +19,26 @@ platformio run -e teensy40 --target upload
 | 13 | Status LED (on while tach pulses arrive) |
 | CAN3 | CAN bus, same as the other nodes |
 
+## Tach signal source (MR2 Spyder)
+
+The tach signal is pin **C6** on the back of the combination meter, labeled
+"ECM (TACH Terminal)" in the 2005 MR2 Spyder repair manual (BE-41 to BE-43,
+Body Electrical, Combination Meter).
+
+- Connector C is the small 10-pin plug, the rightmost of the three on the
+  back of the cluster.
+- The manual's drawing shows two rows of pins: 5 4 3 2 1 on top and
+  10 9 8 7 6 below, so pin 6 is at the bottom right. The layout looks
+  mirrored from the wire end, so go by the pin numbers molded on the
+  connector, not by position.
+- The manual doesn't give the wire color.
+- Don't confuse it with nearby signals: C5 and B4 are the ECM data-bus lines
+  (MPX2, MPX1), and B5 is vehicle speed.
+
+Before splicing, back-probe C6 with the engine idling. A meter on frequency
+should read about 27 Hz at 800 rpm (2 pulses/rev). Splice with solder or a
+Posi-Tap, with the inline fuse close to the splice.
+
 ## Optocoupler hardware
 
 The tach wire swings 0–12 V (up to about 14.5 V with the engine running) and
