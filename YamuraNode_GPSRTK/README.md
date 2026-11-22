@@ -29,6 +29,25 @@ radio's TX goes to the breakout's **RX2** (UART2), and its ground to GND.
 LEDs: pin 22 is on with a 3D fix. Pin 13 is off with no RTK, blinks with RTK
 float, and stays on with RTK fixed.
 
+## USB serial output (115200)
+
+With `DEBUG_VERBOSE` defined, each fix prints one tab-separated line in the same
+format YamuraNode_Analyze uses for an extended GPS message, so GPS_Reader can read
+either one:
+
+```
+00123456	0x50	GPS	22/11/2026 14:05:09	LAT	451234567	LONG	-931234567	COURSE	27012345	SPEED	15	SIV	22	TOW	345600100	HACC	14	FIX	3	RTK	2
+```
+
+The fields are millis, the CAN id, the date as DD/MM/YYYY and the UTC time, then:
+LAT/LONG in degrees x 1e7, COURSE in degrees x 1e5, SPEED in mm/s, TOW in ms and HACC in mm.
+FIX is 0 none, 2 2D, 3 3D, 4 GNSS+DR, 5 time only. RTK is 0 none, 1 float, 2 fixed.
+Once a second a status line follows:
+
+```
+Status	rate	10 Hz	fix	3	RTK	fixed	SIV	22	hAcc	14 mm	USB RTCM	512 B/s
+```
+
 ## F9P settings
 
 Set at every boot (RAM and battery-backed RAM):

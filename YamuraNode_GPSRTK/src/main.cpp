@@ -214,18 +214,27 @@ void UpdateLeds()
   }
 }
 //
-// one line per fix, same fields as the GPS node's send line
+// one line per fix, in the same format YamuraNode_Analyze prints an extended GPS
+// message (id 0x50, 38 bytes), so GPS_Reader and log tools read both the same way:
+// millis  id  GPS  DD/MM/YYYY hh:mm:ss  LAT n  LONG n  COURSE n  SPEED n  SIV n  TOW n  HACC n  FIX n  RTK n
 //
 void PrintFix()
 {
   const GPS_Structure& base = gpsExData.dataStructure.base;
-  sprintf(buffer512, "Fix %lu\tid 0x%02X\tLAT %ld\tLONG %ld\tCOURSE %ld\tSPEED %ld\tSIV %d\tTOW %lu\tHACC %lu\tFIX %d\tRTK %d",
+  sprintf(buffer512, "%08lu\t0x%02X\tGPS\t%02d/%02d/%04d %02d:%02d:%02d\tLAT\t%ld\tLONG\t%ld\tCOURSE\t%ld\tSPEED\t%ld\tSIV\t%d"
+                     "\tTOW\t%lu\tHACC\t%lu\tFIX\t%d\tRTK\t%d",
           (unsigned long)base.timestamp,
           CANID,
+          base.gpsDay,
+          base.gpsMonth,
+          base.gpsYear,
+          base.gpsHour,
+          base.gpsMinute,
+          base.gpsSecond,
           (long)base.latitude,
           (long)base.longitude,
           (long)base.course,
-          (long)base.speed,
+          (long)base.speed,   // mm/s
           base.SIV,
           (unsigned long)gpsExData.dataStructure.iTOW,
           (unsigned long)gpsExData.dataStructure.hAcc,
