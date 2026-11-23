@@ -72,3 +72,98 @@ str2str -in ntrip://user:password@caster:2101/MOUNT -out serial://COM5:115200
 ```
 
 Close the serial monitor first — only one program can hold the COM port.
+
+## Correction radio (DX-LR32 / DX-LR30-900 LoRa kit)
+
+The plan is a pair of DX-SMART LoRa dev boards: one at the base on a Raspberry
+Pi, one in the car on the F9P's UART2. Vendor documents are in `Documents/`
+(DX-LR30-900M22SP board manual, DX-LR30-900M22S module manual, demo source).
+
+Each board is a **DX-LR30-900M22S module** (SX1262, SPI only, 850-930 MHz,
+3.3 V only, max 3.7 V) driven by an **STM32F103C8T6**. The board's serial port
+is the STM32's USART1, also brought out to a CH340 USB-serial chip on the
+Type-C connector. Whatever the STM32 firmware does decides how serial data
+goes over the air. See *Radio firmware* below: the stock demo can't carry RTCM.
+
+Board header pins used (numbers from the board manual, table 2):
+
+| Board pin | Signal |
+|---|---|
+| 29 | PA9 = USART1 **TX** (data out of the board) |
+| 30 | PA10 = USART1 **RX** (data into the board) |
+| 18 | GND |
+| 21 | +5 V in (on-board regulator makes the module's 3.3 V) |
+| 1, 19, 20, 22 | 3.3 V |
+
+The serial pins are 3.3 V logic; the module manual warns 5 V TTL can damage it.
+The vendor suggests a 200 ohm series resistor on TX/RX from an external MCU.
+
+### Rover (in the car)
+
+| Board pin | Connects to |
+|---|---|
+| 29 (PA9, TX) | ZED-F9P breakout **RX2** |
+| 30 (PA10, RX) | not connected (the F9P sends nothing on UART2) |
+| 18 (GND) | GND (common with the Teensy and breakout) |
+| 21 (+5 V) | Teensy **VIN** / the 5 V supply |
+
+Power it from 5 V, not the Teensy's 3.3 V pin: that pin already feeds the
+Teensy and the F9P, and the radio draws about 100 mA in bursts at 22 dBm.
+Leave the Type-C port unplugged in the car (the CH340 shares the RX/TX lines).
+
+### Base (Raspberry Pi)
+
+Simplest: plug the board's **Type-C port into a Pi USB port**. It powers the
+board and the CH340 shows up as `/dev/ttyUSB0` (install nothing; Linux has the
+CH340 driver).
+
+Or wire it to the Pi's header UART:
+
+| Pi header pin | Pi signal | Board pin |
+|---|---|---|
+| 8 | GPIO14 / TXD | 30 (PA10, RX) |
+| 10 | GPIO15 / RXD | 29 (PA9, TX) |
+| 6 | GND | 18 (GND) |
+| 2 or 4 (5 V) | 5 V | 21 (+5 V) |
+
+TX and RX cross. Both sides are 3.3 V logic, so no level shifter is needed.
+
+Pi setup for the header UART:
+
+1. `sudo raspi-config` → Interface Options → Serial Port: login shell over
+   serial **No**, serial port hardware **Yes**.
+2. Pi 3 / 4 / Zero W: add `dtoverlay=disable-bt` to `/boot/firmware/config.txt`
+   so GPIO14/15 get the full hardware UART, not the less reliable mini UART.
+   Pi 5: add `dtparam=uart0=on` instead.
+3. Reboot. The radio is on `/dev/serial0` (Pi 5: `/dev/ttyAMA0`).
+
+Send corrections with RTKLIB's `str2str`, either from an NTRIP caster or from a
+base F9P plugged into the Pi by USB (use `ttyUSB0` instead of `serial0` when the
+board is on USB):
+
+```bash
+str2str -in ntrip://user:password@caster:2101/MOUNT -out serial://serial0:57600
+str2str -in serial://ttyACM0:115200 -out serial://serial0:57600
+```
+
+### Radio firmware
+
+The stock demo firmware on the STM32 (`Documents/.../07 Programming code
+demonstration`, `LR_driver/UserConfig.c`) is a serial-to-LoRa test, not a
+transparent modem, and **won't carry RTCM as shipped**:
+
+- The receiving board prints each packet with `printf("%s", payload)`, which
+  stops at the first zero byte. RTCM is binary and full of zeros.
+- LoRa is set to SF9 / BW125 / CR4-6, about 1.5 kbps over the air, with packet
+  CRC off.
+- USART1 is fixed at 9600 baud (960 bytes/s).
+- 915 MHz, 22 dBm, up to 255 bytes per packet (sent when 255 bytes arrive or the
+  serial line goes idle).
+
+Corrections for GPS + Galileo + BeiDou (MSM4 at 1 Hz plus the base position)
+are roughly 600–900 bytes/s, about 5–7 kbps. So both boards need the
+replacement firmware in `../LoRa_RTCM_Bridge`: binary-safe, CRC on,
+SF7 / BW500 (about 21.9 kbps), serial at 57,600 to match `RTCM_UART2_BAUD`.
+Its README covers building and flashing with mcuisp over the Type-C port.
+If the link still can't keep up, send fewer messages from the base: MSM4 at
+1 Hz and the base position (1005) every 10 s.
