@@ -111,7 +111,10 @@ python tools/ntrip2serial.py --mount NEAREST_RTCM3-GG --lat LAT --lon LON --heig
 ```
 
 Other options: `--host`, `--port`, `--gga-interval` (default 10 s), `--limit`
-(default 450), `--quiet` (only over-limit epochs and a summary each minute). It
+(default 450), `--quiet` (only over-limit epochs and a summary each minute),
+`--status` (print the rover's `Status` lines read back from `--serial`, for the
+Teensy's USB port: the script holds the port, so nothing else can read it), and
+`--log FILE` (also append all output to a file). It
 reconnects if the stream drops. Ctrl+C prints a summary: epochs, largest
 epoch, how many were over the limit, and the count of each message type.
 

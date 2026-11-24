@@ -188,7 +188,22 @@ def main():
     p.add_argument("--limit", type=int, default=450, help="flag epochs bigger than this many bytes (default 450)")
     p.add_argument("--gap", type=float, default=0.3, help="seconds of quiet that end an epoch (default 0.3)")
     p.add_argument("--quiet", action="store_true", help="only print epochs over --limit, plus a summary every minute")
+    p.add_argument("--status", action="store_true",
+                   help="also print the 'Status' lines read back from --serial (the GPSRTK Teensy's USB port), "
+                        "since this program holds the port and nothing else can read it")
+    p.add_argument("--log", help="also append everything printed to this file")
     args = p.parse_args()
+    if args.log:
+        log_file = open(args.log, "a", buffering=1, encoding="utf-8")
+        class Tee:
+            def write(self, text):
+                sys.__stdout__.write(text)
+                log_file.write(text)
+            def flush(self):
+                sys.__stdout__.flush()
+                log_file.flush()
+        sys.stdout = Tee()
+    status_buf = bytearray()
 
     password = os.environ.get("NTRIP_PASSWORD")
     if not args.user or password is None:
@@ -246,6 +261,16 @@ def main():
                         epochs.add(now, scanner.feed(data))
                     elif epochs.last_time is not None and now - epochs.last_time > args.gap:
                         epochs.finish()
+                    if args.status and out is not None and out.in_waiting:
+                        status_buf += out.read(out.in_waiting)
+                        while b"\n" in status_buf:
+                            line, _, rest_buf = status_buf.partition(b"\n")
+                            status_buf[:] = rest_buf
+                            text = line.decode(errors="replace").strip()
+                            if text.startswith("Status") or text.startswith("ZED-F9P"):
+                                print("%s rover  %s" % (time.strftime("%H:%M:%S"), text.replace("\t", " ")), flush=True)
+                        if len(status_buf) > 4096:
+                            status_buf.clear()
                     if now - last_data > 30:
                         raise ConnectionError("no data for 30 s")
                     if now - last_summary >= 60:
