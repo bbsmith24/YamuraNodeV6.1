@@ -48,30 +48,76 @@ Once a second a status line follows:
 Status	rate	10 Hz	fix	3	RTK	fixed	SIV	22	hAcc	14 mm	USB RTCM	512 B/s
 ```
 
+If a setting isn't acknowledged at boot, the F9P line names it, for example
+`ZED-F9P setting failed: navigation rate`. The first boot after a constellation
+change can report a few: the change restarts the GNSS and settings sent during
+the restart time out. They are kept in battery-backed RAM, so the next boot is clean.
+
+### Satellite diagnostics build
+
+Uncomment `#define SAT_DIAGNOSTICS` in `src/main.cpp` (or build with
+`PLATFORMIO_BUILD_FLAGS="-D SAT_DIAGNOSTICS"`) for a bench build that adds
+satellites per constellation, used in the solution / tracked, to the status line:
+
+```
+Status	rate	1 Hz	fix	3	RTK	none	SIV	14	hAcc	2230 mm	USB RTCM	0 B/s	GPS	4/7	GLO	4/5	GAL	4/4	BDS	0/0
+```
+
+It runs at **1 Hz**, because the F9P only sends NAV-SAT at a 1 Hz solution rate
+(tested: nothing at 5 or 10 Hz), so don't use it for logging laps. The extra
+fields are name/value pairs like the rest, so GPS_Reader ignores them. Flashing
+the normal build afterwards turns NAV-SAT off again and goes back to 10 Hz.
+
 ## F9P settings
 
 Set at every boot (RAM and battery-backed RAM):
 
 - I2C: UBX out; UBX + RTCM3 in
 - UART2: RTCM3 in at 57,600 baud (`RTCM_UART2_BAUD`), nothing out
-- GPS + Galileo + BeiDou; GLONASS, SBAS and QZSS off
+- GPS + GLONASS + Galileo; BeiDou, SBAS and QZSS off
 - Automotive dynamic model, 10 Hz (`NAV_RATE_HZ`), auto NAV-PVT
 
-The once-a-second status line shows the measured solution rate. If it stays
-under 10 Hz in RTK, disable BeiDou as well.
+GPS and GLONASS are the constellations with corrections (the MDOT CORS stream,
+below); Galileo only adds satellites to the standalone solution. BeiDou is off
+because nothing sends corrections for it, and three constellations keep the
+solution rate up. The once-a-second status line shows the measured rate. If it
+stays under 10 Hz in RTK, disable Galileo as well.
 
 ## Corrections
 
 - **In the car:** a radio on UART2. The F9P reads it directly; the Teensy is not involved.
 - **On the bench:** send RTCM3 to the Teensy's USB serial port and it is pushed to
-  the F9P over I2C. For example, with RTKLIB from an NTRIP caster (fill in your
-  own caster, mount point and login, and the Teensy's COM port):
+  the F9P over I2C, or to the base radio's COM port to test the whole radio link.
 
-```bash
-str2str -in ntrip://user:password@caster:2101/MOUNT -out serial://COM5:115200
+### Bench corrections from Windows: `tools/ntrip2serial.py`
+
+RTKLIB-EX's Windows build has no `str2str.exe` (only the `strsvr.exe` GUI), so
+`tools/ntrip2serial.py` does the same job. It needs Python 3 and pyserial:
+- it logs in to the caster (MDOT by default) and sends a GGA position;
+- it writes the RTCM to a serial port;
+- it prints each epoch's size and message types, and flags epochs over the
+  radio's 450-byte limit.
+
+The password comes only from the `NTRIP_PASSWORD` environment variable:
+
+```powershell
+$env:NTRIP_USER = 'name'; $env:NTRIP_PASSWORD = 'secret'
+# report only - check the stream and its epoch sizes
+python tools/ntrip2serial.py --mount NEAREST_RTCM3-GG --lat LAT --lon LON --height HEIGHT
+# through the base radio (rover radio on the F9P's RX2)
+python tools/ntrip2serial.py --mount NEAREST_RTCM3-GG --lat LAT --lon LON --height HEIGHT --serial COM20
+# straight into the Teensy's USB port (no radio)
+python tools/ntrip2serial.py --mount NEAREST_RTCM3-GG --lat LAT --lon LON --height HEIGHT --serial COM17 --baud 115200
 ```
 
-Close the serial monitor first — only one program can hold the COM port.
+Other options: `--host`, `--port`, `--gga-interval` (default 10 s), `--limit`
+(default 450), `--quiet` (only over-limit epochs and a summary each minute). It
+reconnects if the stream drops. Ctrl+C prints a summary: epochs, largest
+epoch, how many were over the limit, and the count of each message type.
+
+On the Pi, `sudo apt install rtklib` gives the real `str2str` (commands under
+*Base*). Only one program can hold a COM port, so close the serial monitor or
+GPS_Reader on that port first.
 
 ## Correction radio (DX-SMART LoRa UART module, 915 MHz)
 
@@ -131,26 +177,27 @@ Splitting bursts also works, but needs a pacing script on the Pi (not written).
 The module sends about 225 bytes per radio packet and drops anything that
 arrives before it's ready for the next one. 900-byte epochs as four 225-byte
 pieces were 100% intact with pieces at least 250 ms apart at level 5, 150 ms at
-level 6 and 120 ms at level 7, and lost data at 200 / 120 / 100 ms. So the
-full set with BeiDou (600-900 bytes) would need level 6 with about 200 ms
-spacing; level 5 has no margin. The trimmed set below avoids that.
+level 6 and 120 ms at level 7, and lost data at 200 / 120 / 100 ms. So an
+epoch of 600-900 bytes would need level 6 with about 200 ms spacing; level 5
+has no margin. Keeping each epoch under 450 bytes avoids that.
 
-The correction budget (an MSM4 message is about 27 bytes with framing, plus
-2.25 per satellite and 6 per signal, so about 15 bytes per two-signal
-satellite):
+The correction set is **GPS + GLONASS**, which is what the MDOT CORS
+subscription (RTCM 3.1) provides. Approximate sizes per epoch:
 
 | Message | Rate | Bytes |
 |---|---|---|
-| 1074 GPS MSM4 | 1 Hz | about 27 + 15 per satellite (12 satellites: about 200) |
-| 1094 Galileo MSM4 | 1 Hz | about 27 + 15 per satellite (10 satellites: about 175) |
-| 1005 base position | every 10 s | 25 |
-| 1124 BeiDou MSM4 | **off** | would add about 150-200 |
-| 1084 GLONASS, 1230 GLONASS biases | **off** | (GLONASS is off on the rover) |
+| 1004 GPS L1/L2 (RTCM 3.1) | 1 Hz | about 14 + 16 per satellite (12 satellites: about 200) |
+| 1012 GLONASS L1/L2 (RTCM 3.1) | 1 Hz | about 14 + 16 per satellite (8 satellites: about 145) |
+| 1005 or 1006 base position | every 10 s or so | 25-27 |
+| 1007 / 1008 antenna, 1033 receiver and antenna | if the caster sends them | 20-80 each |
+| Galileo, BeiDou | none | (not in the MDOT subscription) |
 
-That is about 300-400 bytes per epoch, up to about 450 with an unusually full
-sky: it fits, but without much margin. The rover still tracks BeiDou; it just has no
-corrections for it, so RTK uses GPS and Galileo. If fixes drop out under a
-full sky, raise the base's elevation mask so it sends fewer low satellites.
+That is about 350 bytes per epoch, so it fits, but extra descriptor messages
+sent in the same epoch can push it toward the limit. The F9P doesn't need
+1007 / 1008 / 1033, so `str2str` can drop them (see *Base*). The MSM
+equivalents from a base F9P (1074 GPS, 1084 GLONASS, 1230 GLONASS biases) are
+about the same size. If fixes drop out under a full sky, send fewer satellites
+(a higher elevation mask on a base F9P) or the position message less often.
 
 Level 5 (18,230 bps) moves 450 bytes in about 0.2 s, well inside a second, and
 keeps more range than levels 6 and 7, which don't help with the limit. If the
@@ -200,11 +247,11 @@ Either way, keep each epoch under 450 bytes (see *The 455-byte limit*).
 |---|---|
 | CFG-RATE-MEAS | 1000 (1 Hz; message rates below count epochs) |
 | CFG-MSGOUT-RTCM_3X_TYPE1074_USB | 1 |
-| CFG-MSGOUT-RTCM_3X_TYPE1094_USB | 1 |
+| CFG-MSGOUT-RTCM_3X_TYPE1084_USB | 1 |
+| CFG-MSGOUT-RTCM_3X_TYPE1230_USB | 10 |
 | CFG-MSGOUT-RTCM_3X_TYPE1005_USB | 10 |
+| CFG-MSGOUT-RTCM_3X_TYPE1094_USB | 0 |
 | CFG-MSGOUT-RTCM_3X_TYPE1124_USB | 0 |
-| CFG-MSGOUT-RTCM_3X_TYPE1084_USB | 0 |
-| CFG-MSGOUT-RTCM_3X_TYPE1230_USB | 0 |
 | CFG-MSGOUT-RTCM_3X_TYPE4072_0_USB | 0 |
 | CFG-MSGOUT-UBX_NAV_PVT_USB (and other UBX/NMEA on USB) | 0, so only RTCM reaches the radio |
 
@@ -215,17 +262,54 @@ The base also needs its position, from a survey-in or a fixed position
 str2str -in serial://ttyACM0:115200 -out serial://ttyUSB0:57600
 ```
 
-**From an NTRIP caster** the mount point decides what is sent, and most send
-more than 450 bytes per epoch. Let `str2str` decode and re-encode just the
-messages above (both ends need the `#rtcm3` format for it to convert):
+**From the MDOT CORS network (MSRN)**, the planned source: the subscription
+(2026-11-24) is "GPS and GLONASS Corrections", RTCM 3.1, unlimited. Details from
+MDOT's port list (`Documents/MDOT connection info.pdf`, effective 04/15/2021) and
+the caster's sourcetable (checked 2026-11-24):
+
+- **Caster:** `148.149.0.87` (Leica GNSS Spider). This is not the website's
+  host, which only answers on port 443.
+- **Login:** the MDOT CORS portal username and password; both are case sensitive.
+- **Coordinates:** RTK positions come out in **NAD83(2011)**, not WGS84, about
+  1-1.5 m apart in Michigan. Lap timing against a track map made from the same
+  corrections is unaffected; the satellite imagery (WGS84) will look shifted by
+  about that much.
+
+| Port | Mount point | What it is | Needs GGA |
+|---|---|---|---|
+| **10001** | **`NEAREST_RTCM3-GG`** | nearest single station, GPS + GLONASS, RTCM 3 | yes |
+| 10001 | `<SITE>_RTCM3-GG` (121 stations, e.g. `MILI_RTCM3-GG` Livonia, `ANNARBOR_RTCM3-GG`) | one named station, GPS + GLONASS | no |
+| 10000 | `NETWORK_SOLUTION_RTCM3-GG` | network solution (AMC), GPS + GLONASS | yes |
+| 10011 | `NEAREST_MSM4`, `<CODE>-MSM4` | MSM4, GPS + GLONASS + Galileo + BeiDou; may not be in this subscription | nearest: yes |
+
+**Use port 10001.** A single-station stream sends only that station's
+observations, so it stays under the radio's 450-byte limit. A network
+solution adds network correction messages and would likely go over it.
+`NEAREST_RTCM3-GG` picks the station for you from the GGA position. Or name
+the station closest to the track, ideally within about 20 km (the sourcetable
+lists each station's position: `curl http://148.149.0.87:10001/`). A named
+station doesn't need GGA, but MDOT's notes say all products expect it, so send
+it anyway.
+
+`str2str` sends the GGA from a fixed position with `-p` (latitude, longitude,
+ellipsoidal height) every `-n` seconds:
 
 ```bash
-str2str -in ntrip://user:password@caster:2101/MOUNT#rtcm3 \
-        -out serial://ttyUSB0:57600#rtcm3 -msg "1074,1094,1005(10)"
+str2str -in ntrip://USER:PASSWORD@148.149.0.87:10001/NEAREST_RTCM3-GG \
+        -out serial://ttyUSB0:57600 -p LAT LON HEIGHT -n 10
 ```
 
-This conversion has not been tested yet. Check that the rover gets RTK float or
-fixed, and pick a mount point near the track (within about 10-20 km).
+If the epochs
+come out over 450 bytes (for example because of 1007 / 1008 / 1033 descriptor
+messages), let `str2str` decode and re-encode just what the F9P needs; both
+ends need the `#rtcm3` format for it to convert:
+
+```bash
+str2str -in ntrip://USER:PASSWORD@148.149.0.87:10001/NEAREST_RTCM3-GG#rtcm3 \
+        -out serial://ttyUSB0:57600#rtcm3 -msg "1004,1012,1006(10)" -p LAT LON HEIGHT -n 10
+```
+
+None of this has been tested yet. Check that the rover gets RTK float or fixed.
 
 Or wire the module to the Pi's header UART instead of the adapter:
 

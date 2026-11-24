@@ -21,13 +21,20 @@
 //      I2C (bench testing, e.g. str2str/RTKLIB from an NTRIP caster to the COM port)
 //
 #define DEBUG_VERBOSE // uncomment for a line per fix on USB serial
+// #define SAT_DIAGNOSTICS // uncomment for a bench build: 1 Hz solutions, and satellites
+//                         // per constellation (used/tracked) added to the status line.
+//                         // The F9P only sends NAV-SAT at 1 Hz, so not for logging laps.
 #include <Wire.h>
 #include <SparkFun_u-blox_GNSS_v3.h>
 #include "../../YamuraLog_Common/src/YamuraLog_Structures.h"
 
 #define STATUS_LED 13         // off: no RTK, blinking: RTK float, on: RTK fixed
 #define GPS_AQ_LED 22         // on when there is a 3D (or better) fix
+#ifdef SAT_DIAGNOSTICS
+#define NAV_RATE_HZ 1         // solutions per second (NAV-SAT needs 1 Hz)
+#else
 #define NAV_RATE_HZ 10        // solutions per second
+#endif
 #define RTCM_UART2_BAUD 57600 // must match the correction radio's serial baud
 #define CANID 0x050           // same id as the GPS node, for when CAN is added
 
@@ -60,6 +67,13 @@ uint32_t lastStatus = 0;
 uint16_t fixesThisSecond = 0;
 uint32_t rtcmBytesThisSecond = 0;
 uint8_t rtcmBuffer[256];
+#ifdef SAT_DIAGNOSTICS
+// satellites per constellation from NAV-SAT: used in the solution / tracked (signal present)
+enum { CONST_GPS, CONST_GLO, CONST_GAL, CONST_BDS, CONST_COUNT };
+uint8_t satsUsed[CONST_COUNT] = {0};
+uint8_t satsTracked[CONST_COUNT] = {0};
+void NavSatReceived(UBX_NAV_SAT_data_t *navSat);
+#endif
 
 // forward declarations
 void ConfigureGNSS();
@@ -99,29 +113,52 @@ void setup(void)
 //
 // configure the F9P - settings go to RAM and battery-backed RAM (the v3 library default)
 //
+// a setting that the F9P didn't acknowledge is named on the USB serial port
+static bool CheckSetting(bool result, const char *name)
+{
+  if (!result)
+  {
+    Serial.print("ZED-F9P setting failed: ");
+    Serial.println(name);
+  }
+  return result;
+}
+
 void ConfigureGNSS()
 {
   bool ok = true;
   // I2C: UBX only out (no NMEA noise); UBX + RTCM3 in (RTCM3 for USB-forwarded corrections)
-  ok &= gnssDevice.setI2COutput(COM_TYPE_UBX);
-  ok &= gnssDevice.setI2CInput(COM_TYPE_UBX | COM_TYPE_RTCM3);
+  ok &= CheckSetting(gnssDevice.setI2COutput(COM_TYPE_UBX), "I2C output");
+  ok &= CheckSetting(gnssDevice.setI2CInput(COM_TYPE_UBX | COM_TYPE_RTCM3), "I2C input");
   // UART2: corrections from the radio
-  ok &= gnssDevice.setVal32(UBLOX_CFG_UART2_BAUDRATE, RTCM_UART2_BAUD);
-  ok &= gnssDevice.setUART2Input(COM_TYPE_RTCM3);
-  ok &= gnssDevice.setUART2Output(0);
-  // constellations: GPS + Galileo + BeiDou. GLONASS is off so 10 Hz RTK is
-  // reachable and the base doesn't need to send GLONASS corrections (1020 / 1230).
-  // If the measured rate (status line) stays under NAV_RATE_HZ, also disable BeiDou.
-  ok &= gnssDevice.enableGNSS(true, SFE_UBLOX_GNSS_ID_GPS);
-  ok &= gnssDevice.enableGNSS(true, SFE_UBLOX_GNSS_ID_GALILEO);
-  ok &= gnssDevice.enableGNSS(true, SFE_UBLOX_GNSS_ID_BEIDOU);
-  ok &= gnssDevice.enableGNSS(false, SFE_UBLOX_GNSS_ID_GLONASS);
-  ok &= gnssDevice.enableGNSS(false, SFE_UBLOX_GNSS_ID_SBAS);
-  ok &= gnssDevice.enableGNSS(false, SFE_UBLOX_GNSS_ID_QZSS);
+  ok &= CheckSetting(gnssDevice.setVal32(UBLOX_CFG_UART2_BAUDRATE, RTCM_UART2_BAUD), "UART2 baud");
+  ok &= CheckSetting(gnssDevice.setUART2Input(COM_TYPE_RTCM3), "UART2 input");
+  ok &= CheckSetting(gnssDevice.setUART2Output(0), "UART2 output");
+  // constellations: GPS + GLONASS + Galileo. The MDOT CORS stream carries GPS and
+  // GLONASS corrections, so those two give RTK; Galileo adds satellites to the
+  // standalone solution. BeiDou is off: nothing sends corrections for it, and three
+  // constellations keep the solution rate up. If the measured rate (status line)
+  // stays under NAV_RATE_HZ, disable Galileo too.
+  ok &= CheckSetting(gnssDevice.enableGNSS(true, SFE_UBLOX_GNSS_ID_GPS), "GPS on");
+  ok &= CheckSetting(gnssDevice.enableGNSS(true, SFE_UBLOX_GNSS_ID_GLONASS), "GLONASS on");
+  ok &= CheckSetting(gnssDevice.enableGNSS(true, SFE_UBLOX_GNSS_ID_GALILEO), "Galileo on");
+  ok &= CheckSetting(gnssDevice.enableGNSS(false, SFE_UBLOX_GNSS_ID_BEIDOU), "BeiDou off");
+  ok &= CheckSetting(gnssDevice.enableGNSS(false, SFE_UBLOX_GNSS_ID_SBAS), "SBAS off");
+  ok &= CheckSetting(gnssDevice.enableGNSS(false, SFE_UBLOX_GNSS_ID_QZSS), "QZSS off");
   delay(2000); // a constellation change restarts the GNSS - give it time
-  ok &= gnssDevice.setDynamicModel(DYN_MODEL_AUTOMOTIVE);
-  ok &= gnssDevice.setNavigationFrequency(NAV_RATE_HZ);
-  ok &= gnssDevice.setAutoPVT(true);
+  ok &= CheckSetting(gnssDevice.setDynamicModel(DYN_MODEL_AUTOMOTIVE), "dynamic model");
+  ok &= CheckSetting(gnssDevice.setNavigationFrequency(NAV_RATE_HZ), "navigation rate");
+  ok &= CheckSetting(gnssDevice.setAutoPVT(true), "auto NAV-PVT");
+  // NAV-SAT / NAV-SIG: the F9P only sends them at a 1 Hz solution rate (tested
+  // 2026-11-24: nothing at 5 or 10 Hz). The SAT_DIAGNOSTICS build runs at 1 Hz and
+  // turns NAV-SAT on; the normal build turns both off, which also clears any rate
+  // left in battery-backed RAM by a diagnostics build.
+  ok &= CheckSetting(gnssDevice.setVal8(UBLOX_CFG_MSGOUT_UBX_NAV_SIG_I2C, 0), "NAV-SIG off");
+#ifdef SAT_DIAGNOSTICS
+  ok &= CheckSetting(gnssDevice.setAutoNAVSATcallbackPtr(&NavSatReceived), "auto NAV-SAT");
+#else
+  ok &= CheckSetting(gnssDevice.setVal8(UBLOX_CFG_MSGOUT_UBX_NAV_SAT_I2C, 0), "NAV-SAT off");
+#endif
   sprintf(buffer512, "ZED-F9P configured%s - %d Hz, UART2 RTCM3 in at %d baud",
           ok ? "" : " (some settings failed)",
           gnssDevice.getNavigationFrequency(),
@@ -143,6 +180,10 @@ void loop()
     #endif
     // CAN goes here later: send gpsExData.dataBuffer (GPS_EX_SIZE bytes) on CANID
   }
+#ifdef SAT_DIAGNOSTICS
+  gnssDevice.checkUblox();       // take in NAV-SAT
+  gnssDevice.checkCallbacks();   // runs NavSatReceived when one has arrived
+#endif
   UpdateLeds();
   if (millis() - lastStatus >= 1000)
   {
@@ -254,8 +295,49 @@ void PrintStatus()
           gpsExData.dataStructure.base.SIV,
           (unsigned long)gpsExData.dataStructure.hAcc,
           (unsigned long)rtcmBytesThisSecond);
+#ifdef SAT_DIAGNOSTICS
+  // more name/value pairs: readers that look fields up by name (GPS_Reader) ignore them
+  sprintf(buffer512 + strlen(buffer512), "\tGPS\t%u/%u\tGLO\t%u/%u\tGAL\t%u/%u\tBDS\t%u/%u",
+          satsUsed[CONST_GPS], satsTracked[CONST_GPS],
+          satsUsed[CONST_GLO], satsTracked[CONST_GLO],
+          satsUsed[CONST_GAL], satsTracked[CONST_GAL],
+          satsUsed[CONST_BDS], satsTracked[CONST_BDS]);
+#endif
   Serial.println(buffer512);
 }
+#ifdef SAT_DIAGNOSTICS
+//
+// NAV-SAT: count satellites per constellation, used in the solution and tracked.
+// gnssId: 0 GPS, 1 SBAS, 2 Galileo, 3 BeiDou, 5 QZSS, 6 GLONASS
+//
+void NavSatReceived(UBX_NAV_SAT_data_t *navSat)
+{
+  uint8_t used[CONST_COUNT] = {0};
+  uint8_t tracked[CONST_COUNT] = {0};
+  for (uint16_t i = 0; i < navSat->header.numSvs && i < UBX_NAV_SAT_MAX_BLOCKS; i++)
+  {
+    int c;
+    switch (navSat->blocks[i].gnssId)
+    {
+      case 0:  c = CONST_GPS; break;
+      case 6:  c = CONST_GLO; break;
+      case 2:  c = CONST_GAL; break;
+      case 3:  c = CONST_BDS; break;
+      default: continue;
+    }
+    if (navSat->blocks[i].cno > 0)
+    {
+      tracked[c]++;
+    }
+    if (navSat->blocks[i].flags.bits.svUsed)
+    {
+      used[c]++;
+    }
+  }
+  memcpy(satsUsed, used, sizeof(used));
+  memcpy(satsTracked, tracked, sizeof(tracked));
+}
+#endif
 
 const char* CarrSolnText(uint8_t carrSoln)
 {
