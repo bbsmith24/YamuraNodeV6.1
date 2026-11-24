@@ -3,3 +3,6 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
+
+# vendor docs for the DX-LR30 LoRa dev board (kept locally, 15 MB)
+Documents/
