@@ -73,6 +73,14 @@ enum { CONST_GPS, CONST_GLO, CONST_GAL, CONST_BDS, CONST_COUNT };
 uint8_t satsUsed[CONST_COUNT] = {0};
 uint8_t satsTracked[CONST_COUNT] = {0};
 void NavSatReceived(UBX_NAV_SAT_data_t *navSat);
+// signals per band from NAV-SIG: used / tracked (code locked), mean C/N0 of tracked
+// signals, and how many signals use corrections (RTCM pseudorange or carrier)
+enum { BAND_L1, BAND_L2, BAND_COUNT };
+uint8_t sigUsed[BAND_COUNT] = {0};
+uint8_t sigTracked[BAND_COUNT] = {0};
+uint8_t sigCn0[BAND_COUNT] = {0};
+uint8_t sigCorrected = 0;
+void NavSigReceived(UBX_NAV_SIG_data_t *navSig);
 #endif
 
 // forward declarations
@@ -153,11 +161,12 @@ void ConfigureGNSS()
   // 2026-11-24: nothing at 5 or 10 Hz). The SAT_DIAGNOSTICS build runs at 1 Hz and
   // turns NAV-SAT on; the normal build turns both off, which also clears any rate
   // left in battery-backed RAM by a diagnostics build.
-  ok &= CheckSetting(gnssDevice.setVal8(UBLOX_CFG_MSGOUT_UBX_NAV_SIG_I2C, 0), "NAV-SIG off");
 #ifdef SAT_DIAGNOSTICS
   ok &= CheckSetting(gnssDevice.setAutoNAVSATcallbackPtr(&NavSatReceived), "auto NAV-SAT");
+  ok &= CheckSetting(gnssDevice.setAutoNAVSIGcallbackPtr(&NavSigReceived), "auto NAV-SIG");
 #else
   ok &= CheckSetting(gnssDevice.setVal8(UBLOX_CFG_MSGOUT_UBX_NAV_SAT_I2C, 0), "NAV-SAT off");
+  ok &= CheckSetting(gnssDevice.setVal8(UBLOX_CFG_MSGOUT_UBX_NAV_SIG_I2C, 0), "NAV-SIG off");
 #endif
   sprintf(buffer512, "ZED-F9P configured%s - %d Hz, UART2 RTCM3 in at %d baud",
           ok ? "" : " (some settings failed)",
@@ -302,6 +311,10 @@ void PrintStatus()
           satsUsed[CONST_GLO], satsTracked[CONST_GLO],
           satsUsed[CONST_GAL], satsTracked[CONST_GAL],
           satsUsed[CONST_BDS], satsTracked[CONST_BDS]);
+  sprintf(buffer512 + strlen(buffer512), "\tL1\t%u/%u\tL1 C/N0\t%u dBHz\tL2\t%u/%u\tL2 C/N0\t%u dBHz\tCORR\t%u",
+          sigUsed[BAND_L1], sigTracked[BAND_L1], sigCn0[BAND_L1],
+          sigUsed[BAND_L2], sigTracked[BAND_L2], sigCn0[BAND_L2],
+          sigCorrected);
 #endif
   Serial.println(buffer512);
 }
@@ -336,6 +349,55 @@ void NavSatReceived(UBX_NAV_SAT_data_t *navSat)
   }
   memcpy(satsUsed, used, sizeof(used));
   memcpy(satsTracked, tracked, sizeof(tracked));
+}
+//
+// NAV-SIG: signals per band. L2 here means the second frequency: GPS L2C (sigId 3, 4),
+// GLONASS L2OF (2), Galileo E5b (5, 6), BeiDou B2I (2, 3); everything else is L1/E1/B1.
+// sigFlags bits (u-blox interface description): 0-1 health, 2 prSmoothed, 3 prUsed,
+// 4 crUsed, 5 doUsed, 6 prCorrUsed, 7 crCorrUsed. Read from the raw word, because the
+// library's bitfield gives health only one bit.
+//
+void NavSigReceived(UBX_NAV_SIG_data_t *navSig)
+{
+  uint8_t used[BAND_COUNT] = {0};
+  uint8_t tracked[BAND_COUNT] = {0};
+  uint16_t cn0Sum[BAND_COUNT] = {0};
+  uint8_t corrected = 0;
+  for (uint16_t i = 0; i < navSig->header.numSigs && i < UBX_NAV_SIG_MAX_BLOCKS; i++)
+  {
+    const UBX_NAV_SIG_block_t &s = navSig->blocks[i];
+    bool second;
+    switch (s.gnssId)
+    {
+      case 0:  second = (s.sigId == 3 || s.sigId == 4); break;   // GPS
+      case 6:  second = (s.sigId == 2); break;                    // GLONASS
+      case 2:  second = (s.sigId == 5 || s.sigId == 6); break;   // Galileo
+      case 3:  second = (s.sigId == 2 || s.sigId == 3); break;   // BeiDou
+      default: continue;
+    }
+    int b = second ? BAND_L2 : BAND_L1;
+    uint16_t flags = s.sigFlags.all;
+    if (s.qualityInd >= 4)
+    {
+      tracked[b]++;
+      cn0Sum[b] += s.cno;
+    }
+    if (flags & (1 << 3))
+    {
+      used[b]++;
+    }
+    if (flags & ((1 << 6) | (1 << 7)))
+    {
+      corrected++;
+    }
+  }
+  for (int b = 0; b < BAND_COUNT; b++)
+  {
+    sigUsed[b] = used[b];
+    sigTracked[b] = tracked[b];
+    sigCn0[b] = tracked[b] ? (uint8_t)(cn0Sum[b] / tracked[b]) : 0;
+  }
+  sigCorrected = corrected;
 }
 #endif
 

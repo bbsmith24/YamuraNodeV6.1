@@ -60,8 +60,18 @@ Uncomment `#define SAT_DIAGNOSTICS` in `src/main.cpp` (or build with
 satellites per constellation, used in the solution / tracked, to the status line:
 
 ```
-Status	rate	1 Hz	fix	3	RTK	none	SIV	14	hAcc	2230 mm	USB RTCM	0 B/s	GPS	4/7	GLO	4/5	GAL	4/4	BDS	0/0
+Status	rate	1 Hz	fix	3	RTK	none	SIV	16	hAcc	4572 mm	USB RTCM	0 B/s	GPS	7/8	GLO	4/5	GAL	5/6	BDS	0/0	L1	16/18	L1 C/N0	20 dBHz	L2	12/14	L2 C/N0	19 dBHz	CORR	0
 ```
+
+- `GPS` / `GLO` / `GAL` / `BDS`: satellites used in the solution / tracked (NAV-SAT).
+- `L1`, `L2`: signals used / tracked (code locked) on each band (NAV-SIG). L2 is
+  the second frequency: GPS L2C, GLONASS L2OF, Galileo E5b, BeiDou B2I. No L2
+  signals means a single-band antenna or one that isn't receiving L2.
+- `L1 C/N0`, `L2 C/N0`: mean signal strength of the tracked signals. An open sky
+  with a good antenna gives about 40-50 dBHz; RTK needs mid-30s or better.
+  Around 20 dBHz means the antenna is indoors or blocked, has no ground plane,
+  isn't powered, or has a bad cable or connector.
+- `CORR`: signals using RTCM corrections. It stays 0 until corrections arrive.
 
 It runs at **1 Hz**, because the F9P only sends NAV-SAT at a 1 Hz solution rate
 (tested: nothing at 5 or 10 Hz), so don't use it for logging laps. The extra
