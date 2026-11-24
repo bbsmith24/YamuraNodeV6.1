@@ -118,11 +118,36 @@ Air-rate levels (`AT+LEVELn`; a lower level reaches farther):
 Baud codes (`AT+BAUDn`), as this firmware reports them: 3 = 9600, 6 = 57600,
 7 = 115200.
 
-Corrections for GPS + Galileo + BeiDou (MSM4 at 1 Hz plus the base position)
-are roughly 600-900 bytes/s, about 5-7 kbps, so level 3 is too slow and level 5
-leaves about 2.5x headroom. If the link drops out at the far end of the track,
-send less from the base (MSM4 at 1 Hz, base position 1005 every 10 s), or try
-level 4. If it can't keep up, go to level 6.
+### The 455-byte limit
+
+Tested with both modules on a PC (2026-11-24): the module passes at most
+**455 bytes per burst** and silently drops the rest, at every air rate
+(levels 5, 6 and 7 gave identical results). Bursts of up to 450 bytes once a
+second arrived 100% intact; 600-byte bursts lost 24% and 900-byte bursts 49%.
+Splitting a burst into timed pieces only worked in a narrow window, so it isn't
+used. A base sends each epoch's RTCM as one burst, so **the base must send
+under about 450 bytes per epoch**.
+
+The correction budget (an MSM4 message is about 27 bytes with framing, plus
+2.25 per satellite and 6 per signal, so about 15 bytes per two-signal
+satellite):
+
+| Message | Rate | Bytes |
+|---|---|---|
+| 1074 GPS MSM4 | 1 Hz | about 27 + 15 per satellite (12 satellites: about 200) |
+| 1094 Galileo MSM4 | 1 Hz | about 27 + 15 per satellite (10 satellites: about 175) |
+| 1005 base position | every 10 s | 25 |
+| 1124 BeiDou MSM4 | **off** | would add about 150-200 |
+| 1084 GLONASS, 1230 GLONASS biases | **off** | (GLONASS is off on the rover) |
+
+That is about 300-400 bytes per epoch, up to about 450 with an unusually full
+sky: it fits, but without much margin. The rover still tracks BeiDou; it just has no
+corrections for it, so RTK uses GPS and Galileo. If fixes drop out under a
+full sky, raise the base's elevation mask so it sends fewer low satellites.
+
+Level 5 (18,230 bps) moves 450 bytes in about 0.2 s, well inside a second, and
+keeps more range than levels 6 and 7, which don't help with the limit. If the
+link drops out at the far end of the track, try level 4.
 
 ### Rover (in the car)
 
@@ -141,13 +166,43 @@ module's serial pins are 3.3 V logic, matching the F9P.
 ### Base (Raspberry Pi)
 
 Plug the USB-serial adapter into a Pi USB port. It shows up as `/dev/ttyUSB0`
-(Linux includes the CH340 driver). Send corrections with RTKLIB's `str2str`,
-either from an NTRIP caster or from a base F9P plugged into the Pi by USB:
+(Linux includes the CH340 driver). Send corrections with RTKLIB's `str2str`.
+Either way, keep each epoch under 450 bytes (see *The 455-byte limit*).
+
+**From a base F9P** plugged into the Pi by USB, set the base's RTCM output
+(u-center: Configuration View → Generation 9 Advanced Configuration, or
+`ubxtool -z KEY,VALUE`), saved to RAM and flash:
+
+| Key | Value |
+|---|---|
+| CFG-RATE-MEAS | 1000 (1 Hz; message rates below count epochs) |
+| CFG-MSGOUT-RTCM_3X_TYPE1074_USB | 1 |
+| CFG-MSGOUT-RTCM_3X_TYPE1094_USB | 1 |
+| CFG-MSGOUT-RTCM_3X_TYPE1005_USB | 10 |
+| CFG-MSGOUT-RTCM_3X_TYPE1124_USB | 0 |
+| CFG-MSGOUT-RTCM_3X_TYPE1084_USB | 0 |
+| CFG-MSGOUT-RTCM_3X_TYPE1230_USB | 0 |
+| CFG-MSGOUT-RTCM_3X_TYPE4072_0_USB | 0 |
+| CFG-MSGOUT-UBX_NAV_PVT_USB (and other UBX/NMEA on USB) | 0, so only RTCM reaches the radio |
+
+The base also needs its position, from a survey-in or a fixed position
+(CFG-TMODE-*). Then:
 
 ```bash
-str2str -in ntrip://user:password@caster:2101/MOUNT -out serial://ttyUSB0:57600
 str2str -in serial://ttyACM0:115200 -out serial://ttyUSB0:57600
 ```
+
+**From an NTRIP caster** the mount point decides what is sent, and most send
+more than 450 bytes per epoch. Let `str2str` decode and re-encode just the
+messages above (both ends need the `#rtcm3` format for it to convert):
+
+```bash
+str2str -in ntrip://user:password@caster:2101/MOUNT#rtcm3 \
+        -out serial://ttyUSB0:57600#rtcm3 -msg "1074,1094,1005(10)"
+```
+
+This conversion has not been tested yet. Check that the rover gets RTK float or
+fixed, and pick a mount point near the track (within about 10-20 km).
 
 Or wire the module to the Pi's header UART instead of the adapter:
 
