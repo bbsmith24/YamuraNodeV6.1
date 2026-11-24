@@ -158,17 +158,33 @@ link drops out at the far end of the track, try level 4.
 
 ### Rover (in the car)
 
-| Module | Connects to |
-|---|---|
-| TX | ZED-F9P breakout **RX2** |
-| RX | not connected (the F9P sends nothing on UART2) |
-| GND | GND (common with the Teensy and breakout) |
-| VCC | 5 V supply / Teensy **VIN** (check the voltage marked on the board) |
-| M0, M1, AUX | not connected |
+The radio feeds the SparkFun GPS-RTK-SMA breakout's UART2, which the firmware
+sets to RTCM3 in at 57,600 baud on every boot. The Teensy-to-breakout wiring
+(I2C or Qwiic, see *Wiring*) doesn't change.
 
-Use the 5 V supply, not the Teensy's 3.3 V pin: that pin already feeds the
-Teensy and the F9P, and the radio draws about 100 mA in bursts at 22 dBm. The
-module's serial pins are 3.3 V logic, matching the F9P.
+| Radio module | Connects to | Notes |
+|---|---|---|
+| TX | breakout **RX2** | corrections into the F9P's UART2 |
+| RX | not connected | the F9P's TX2 sends nothing |
+| GND | breakout **GND** | common ground with the Teensy and breakout |
+| VCC | Teensy **VIN** (5 V) | not the Teensy's 3.3 V pin |
+| M0, M1, AUX | not connected | as on the bench, where the link was tested |
+
+- **Power:** the Teensy's 3.3 V pin already feeds the Teensy and the F9P, and the
+  radio draws about 100 mA in bursts at 22 dBm. The breakout's own 5V pin is
+  only live when its USB-C is plugged in, so don't use it. On the bench the
+  module ran from its USB adapter's VCC; check the voltage marked on the
+  module. If it's 3.3 V only, give it its own 3.3 V regulator.
+- **Logic levels:** the radio's TX is 3.3 V logic, matching RX2. The F9P's
+  inputs are not 5 V tolerant.
+- **Adapter:** take the module off its USB adapter in the car, or at least
+  leave the adapter's USB unplugged, so the CH340 doesn't drive the TX line too.
+- **Antennas:** keep the LoRa antenna at least 30 cm from the GNSS antenna if
+  you can. 22 dBm at 915 MHz that close can desensitize the GNSS receiver.
+
+First power-up check: with the base sending, the rover radio's TX shows
+activity once a second, and the status line goes from `RTK none` to `float`,
+then `fixed`. The pin 13 LED goes from off to blinking (float) to on (fixed).
 
 ### Base (Raspberry Pi)
 
