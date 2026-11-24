@@ -73,97 +73,100 @@ str2str -in ntrip://user:password@caster:2101/MOUNT -out serial://COM5:115200
 
 Close the serial monitor first — only one program can hold the COM port.
 
-## Correction radio (DX-LR32 / DX-LR30-900 LoRa kit)
+## Correction radio (DX-SMART LoRa UART module, 915 MHz)
 
-The plan is a pair of DX-SMART LoRa dev boards: one at the base on a Raspberry
-Pi, one in the car on the F9P's UART2. Vendor documents are in `Documents/`
-(DX-LR30-900M22SP board manual, DX-LR30-900M22S module manual, demo source).
+A pair of DX-SMART LoRa serial modules (SX1262, AT-command firmware V1.2.4)
+carry the corrections: one at the base on a Raspberry Pi, one in the car on
+the F9P's UART2. Each module sits on a small USB-serial adapter board wired
+VCC, GND, TX, RX. M0, M1 and AUX are left unconnected.
 
-Each board is a **DX-LR30-900M22S module** (SX1262, SPI only, 850-930 MHz,
-3.3 V only, max 3.7 V) driven by an **STM32F103C8T6**. The board's serial port
-is the STM32's USART1, also brought out to a CH340 USB-serial chip on the
-Type-C connector. Whatever the STM32 firmware does decides how serial data
-goes over the air. See *Radio firmware* below: the stock demo can't carry RTCM.
+The module is a transparent serial link: bytes into its RX go out over the air,
+and received packets come out of its TX unchanged, so binary RTCM is fine. RTCM
+has its own CRC-24 and the radio drops packets that fail its own CRC.
 
-Board header pins used (numbers from the board manual, table 2):
+### Settings (both modules must match)
 
-| Board pin | Signal |
-|---|---|
-| 29 | PA9 = USART1 **TX** (data out of the board) |
-| 30 | PA10 = USART1 **RX** (data into the board) |
-| 18 | GND |
-| 21 | +5 V in (on-board regulator makes the module's 3.3 V) |
-| 1, 19, 20, 22 | 3.3 V |
+| Setting | Value | Command |
+|---|---|---|
+| Mode | 0, transparent | `AT+MODE0` (default) |
+| Air rate | level 5, 18,230 bps | `AT+LEVEL5` |
+| Serial | 57,600 baud, 8N1 (matches `RTCM_UART2_BAUD`) | `AT+BAUD6` |
+| Frequency | 915.15 MHz (channel 41) | default |
+| Power | 22 dBm | default |
+| Address | ff,ff (broadcast) | default |
 
-The serial pins are 3.3 V logic; the module manual warns 5 V TTL can damage it.
-The vendor suggests a 200 ohm series resistor on TX/RX from an external MCU.
+The first module is already set. To set the second, plug its adapter into a PC
+and open the port at its current baud (factory default 9600) in a serial
+terminal that sends CR+LF:
+
+1. `+++` → `Entry AT` (command mode)
+2. `AT+LEVEL5` → `+LEVEL=5 OK`
+3. `AT+BAUD6` → `+BAUD=6 OK`
+4. `AT+HELP` lists the settings; check `LEVEL:5 >> 18230bps`
+5. `+++` → `Exit AT`, `Power on`. The module restarts at the new baud and keeps
+   its settings.
+
+`+++` toggles command mode at any time, so the base software must never send
+`+++` followed by CR+LF (RTCM won't).
+
+Air-rate levels (`AT+LEVELn`; a lower level reaches farther):
+
+| Level | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 |
+|---|---|---|---|---|---|---|---|---|
+| bps | 336 | 1,075 | 2,149 | 6,250 | 10,417 | 18,230 | 37,500 | 62,500 |
+
+Baud codes (`AT+BAUDn`), as this firmware reports them: 3 = 9600, 6 = 57600,
+7 = 115200.
+
+Corrections for GPS + Galileo + BeiDou (MSM4 at 1 Hz plus the base position)
+are roughly 600-900 bytes/s, about 5-7 kbps, so level 3 is too slow and level 5
+leaves about 2.5x headroom. If the link drops out at the far end of the track,
+send less from the base (MSM4 at 1 Hz, base position 1005 every 10 s), or try
+level 4. If it can't keep up, go to level 6.
 
 ### Rover (in the car)
 
-| Board pin | Connects to |
+| Module | Connects to |
 |---|---|
-| 29 (PA9, TX) | ZED-F9P breakout **RX2** |
-| 30 (PA10, RX) | not connected (the F9P sends nothing on UART2) |
-| 18 (GND) | GND (common with the Teensy and breakout) |
-| 21 (+5 V) | Teensy **VIN** / the 5 V supply |
+| TX | ZED-F9P breakout **RX2** |
+| RX | not connected (the F9P sends nothing on UART2) |
+| GND | GND (common with the Teensy and breakout) |
+| VCC | 5 V supply / Teensy **VIN** (check the voltage marked on the board) |
+| M0, M1, AUX | not connected |
 
-Power it from 5 V, not the Teensy's 3.3 V pin: that pin already feeds the
-Teensy and the F9P, and the radio draws about 100 mA in bursts at 22 dBm.
-Leave the Type-C port unplugged in the car (the CH340 shares the RX/TX lines).
+Use the 5 V supply, not the Teensy's 3.3 V pin: that pin already feeds the
+Teensy and the F9P, and the radio draws about 100 mA in bursts at 22 dBm. The
+module's serial pins are 3.3 V logic, matching the F9P.
 
 ### Base (Raspberry Pi)
 
-Simplest: plug the board's **Type-C port into a Pi USB port**. It powers the
-board and the CH340 shows up as `/dev/ttyUSB0` (install nothing; Linux has the
-CH340 driver).
-
-Or wire it to the Pi's header UART:
-
-| Pi header pin | Pi signal | Board pin |
-|---|---|---|
-| 8 | GPIO14 / TXD | 30 (PA10, RX) |
-| 10 | GPIO15 / RXD | 29 (PA9, TX) |
-| 6 | GND | 18 (GND) |
-| 2 or 4 (5 V) | 5 V | 21 (+5 V) |
-
-TX and RX cross. Both sides are 3.3 V logic, so no level shifter is needed.
-
-Pi setup for the header UART:
-
-1. `sudo raspi-config` → Interface Options → Serial Port: login shell over
-   serial **No**, serial port hardware **Yes**.
-2. Pi 3 / 4 / Zero W: add `dtoverlay=disable-bt` to `/boot/firmware/config.txt`
-   so GPIO14/15 get the full hardware UART, not the less reliable mini UART.
-   Pi 5: add `dtparam=uart0=on` instead.
-3. Reboot. The radio is on `/dev/serial0` (Pi 5: `/dev/ttyAMA0`).
-
-Send corrections with RTKLIB's `str2str`, either from an NTRIP caster or from a
-base F9P plugged into the Pi by USB (use `ttyUSB0` instead of `serial0` when the
-board is on USB):
+Plug the USB-serial adapter into a Pi USB port. It shows up as `/dev/ttyUSB0`
+(Linux includes the CH340 driver). Send corrections with RTKLIB's `str2str`,
+either from an NTRIP caster or from a base F9P plugged into the Pi by USB:
 
 ```bash
-str2str -in ntrip://user:password@caster:2101/MOUNT -out serial://serial0:57600
-str2str -in serial://ttyACM0:115200 -out serial://serial0:57600
+str2str -in ntrip://user:password@caster:2101/MOUNT -out serial://ttyUSB0:57600
+str2str -in serial://ttyACM0:115200 -out serial://ttyUSB0:57600
 ```
 
-### Radio firmware
+Or wire the module to the Pi's header UART instead of the adapter:
 
-The stock demo firmware on the STM32 (`Documents/.../07 Programming code
-demonstration`, `LR_driver/UserConfig.c`) is a serial-to-LoRa test, not a
-transparent modem, and **won't carry RTCM as shipped**:
+| Pi header pin | Pi signal | Module |
+|---|---|---|
+| 8 | GPIO14 / TXD | RX |
+| 10 | GPIO15 / RXD | TX |
+| 6 | GND | GND |
+| 2 or 4 (5 V) | 5 V | VCC |
 
-- The receiving board prints each packet with `printf("%s", payload)`, which
-  stops at the first zero byte. RTCM is binary and full of zeros.
-- LoRa is set to SF9 / BW125 / CR4-6, about 1.5 kbps over the air, with packet
-  CRC off.
-- USART1 is fixed at 9600 baud (960 bytes/s).
-- 915 MHz, 22 dBm, up to 255 bytes per packet (sent when 255 bytes arrive or the
-  serial line goes idle).
+TX and RX cross. For the header UART: in `sudo raspi-config` → Interface Options
+→ Serial Port, set login shell **No** and serial hardware **Yes**. On a Pi 3 / 4 /
+Zero W add `dtoverlay=disable-bt` to `/boot/firmware/config.txt` (Pi 5:
+`dtparam=uart0=on`), reboot, and use `serial0` (Pi 5: `ttyAMA0`) in place of
+`ttyUSB0` above.
 
-Corrections for GPS + Galileo + BeiDou (MSM4 at 1 Hz plus the base position)
-are roughly 600–900 bytes/s, about 5–7 kbps. So both boards need the
-replacement firmware in `../LoRa_RTCM_Bridge`: binary-safe, CRC on,
-SF7 / BW500 (about 21.9 kbps), serial at 57,600 to match `RTCM_UART2_BAUD`.
-Its README covers building and flashing with mcuisp over the Type-C port.
-If the link still can't keep up, send fewer messages from the base: MSM4 at
-1 Hz and the base position (1005) every 10 s.
+### Bench test
+
+With the rover module on the F9P and the base module on a PC, run the same
+`str2str` command with `serial://COMn:57600` as the output. The once-a-second
+status line should go to RTK float, then fixed. GPS_Reader can compare this
+stream with the uncorrected one.
