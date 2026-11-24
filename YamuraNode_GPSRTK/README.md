@@ -108,6 +108,10 @@ RTKLIB-EX's Windows build has no `str2str.exe` (only the `strsvr.exe` GUI), so
 - it prints each epoch's size and message types, and flags epochs over the
   radio's 450-byte limit.
 
+`--lat` and `--lon` are required: they are the base's position, sent to the
+caster as a GGA line on connect and every 10 s. `NEAREST_RTCM3-GG` picks the
+station from it, so at the track use the track's position, not home's.
+
 The password comes only from the `NTRIP_PASSWORD` environment variable:
 
 ```powershell

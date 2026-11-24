@@ -4,8 +4,9 @@ ntrip2serial - NTRIP caster -> serial port, for RTCM3 corrections on the bench.
 
 Does the str2str job (RTKLIB-EX's Windows build has no str2str.exe):
   - logs in to an NTRIP caster (NTRIP v1, HTTP basic auth)
-  - sends an NMEA GGA position line on connect and every --gga-interval seconds
-    (network and "nearest" mount points need it; MDOT asks for it on every product)
+  - sends an NMEA GGA position line (--lat/--lon, required) on connect and every
+    --gga-interval seconds (network and "nearest" mount points need it; MDOT asks
+    for it on every product). Use the base's position - at the track, the track's.
   - writes the RTCM3 stream to a serial port (the base radio, or the Teensy's USB port)
   - reports each epoch's size and message types, and flags epochs over --limit bytes
     (the DX-SMART LoRa modules drop anything past ~455 bytes per burst)
@@ -179,8 +180,9 @@ def main():
     p.add_argument("--port", type=int, default=MDOT_PORT, help="caster port (default %d)" % MDOT_PORT)
     p.add_argument("--mount", required=True, help="mount point, e.g. NEAREST_RTCM3-GG or MILI_RTCM3-GG")
     p.add_argument("--user", default=os.environ.get("NTRIP_USER"), help="user name (default: NTRIP_USER)")
-    p.add_argument("--lat", type=float, help="position for GGA, degrees (+N)")
-    p.add_argument("--lon", type=float, help="position for GGA, degrees (+E)")
+    p.add_argument("--lat", type=float, required=True,
+                   help="base position for the GGA sent to the caster, degrees (+N); use the track's, not home's")
+    p.add_argument("--lon", type=float, required=True, help="base position for GGA, degrees (+E)")
     p.add_argument("--height", type=float, default=0.0, help="ellipsoidal height for GGA, m")
     p.add_argument("--gga-interval", type=float, default=10.0, help="seconds between GGA lines (0 = once)")
     p.add_argument("--serial", help="serial port for the RTCM stream (omit to only report)")
@@ -208,8 +210,8 @@ def main():
     password = os.environ.get("NTRIP_PASSWORD")
     if not args.user or password is None:
         sys.exit("set the user name (--user or NTRIP_USER) and the NTRIP_PASSWORD environment variable")
-    if (args.lat is None) != (args.lon is None):
-        sys.exit("give both --lat and --lon, or neither")
+    if not (-90.0 <= args.lat <= 90.0 and -180.0 <= args.lon <= 180.0):
+        sys.exit("--lat must be -90..90 and --lon -180..180 (decimal degrees)")
 
     out = None
     if args.serial:
@@ -240,7 +242,7 @@ def main():
             try:
                 while True:
                     now = time.monotonic()
-                    if args.lat is not None and (last_gga == 0.0 or (args.gga_interval > 0 and now - last_gga >= args.gga_interval)):
+                    if last_gga == 0.0 or (args.gga_interval > 0 and now - last_gga >= args.gga_interval):
                         sock.sendall(gga_sentence(args.lat, args.lon, args.height).encode())
                         last_gga = now
                     if pending:
