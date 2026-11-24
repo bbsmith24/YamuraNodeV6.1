@@ -124,9 +124,16 @@ Tested with both modules on a PC (2026-11-24): the module passes at most
 **455 bytes per burst** and silently drops the rest, at every air rate
 (levels 5, 6 and 7 gave identical results). Bursts of up to 450 bytes once a
 second arrived 100% intact; 600-byte bursts lost 24% and 900-byte bursts 49%.
-Splitting a burst into timed pieces only worked in a narrow window, so it isn't
-used. A base sends each epoch's RTCM as one burst, so **the base must send
-under about 450 bytes per epoch**.
+A base sends each epoch's RTCM as one burst, so **the base must send under
+about 450 bytes per epoch**.
+
+Splitting bursts also works, but needs a pacing script on the Pi (not written).
+The module sends about 225 bytes per radio packet and drops anything that
+arrives before it's ready for the next one. 900-byte epochs as four 225-byte
+pieces were 100% intact with pieces at least 250 ms apart at level 5, 150 ms at
+level 6 and 120 ms at level 7, and lost data at 200 / 120 / 100 ms. So the
+full set with BeiDou (600-900 bytes) would need level 6 with about 200 ms
+spacing; level 5 has no margin. The trimmed set below avoids that.
 
 The correction budget (an MSM4 message is about 27 bytes with framing, plus
 2.25 per satellite and 6 per signal, so about 15 bytes per two-signal
